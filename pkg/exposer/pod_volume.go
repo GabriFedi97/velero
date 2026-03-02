@@ -184,7 +184,22 @@ func (e *podVolumeExposer) Expose(ctx context.Context, ownerObject corev1api.Obj
 		}
 	}
 
-	hostingPod, err := e.createHostingPod(ctx, ownerObject, param.Type, path.ByPath, param.OperationTimeout, param.HostingPodLabels, param.HostingPodAnnotations, param.HostingPodTolerations, pod.Spec.NodeName, param.Resources, nodeOS, param.PriorityClassName, param.Privileged, cachePVC)
+	hostingPod, err := e.createHostingPod(
+		ctx,
+		ownerObject,
+		param.Type,
+		path.ByPath,
+		param.OperationTimeout,
+		param.HostingPodLabels,
+		param.HostingPodAnnotations,
+		param.HostingPodTolerations,
+		pod.Spec.NodeName,
+		param.Resources,
+		nodeOS,
+		param.PriorityClassName,
+		param.Privileged,
+		cachePVC,
+	)
 	if err != nil {
 		return errors.Wrapf(err, "error to create hosting pod")
 	}
@@ -328,8 +343,22 @@ func (e *podVolumeExposer) CleanUp(ctx context.Context, ownerObject corev1api.Ob
 	kube.DeletePVAndPVCIfAny(ctx, e.kubeClient.CoreV1(), cachePVCName, ownerObject.Namespace, 0, e.log)
 }
 
-func (e *podVolumeExposer) createHostingPod(ctx context.Context, ownerObject corev1api.ObjectReference, exposeType string, hostPath string,
-	operationTimeout time.Duration, label map[string]string, annotation map[string]string, toleration []corev1api.Toleration, selectedNode string, resources corev1api.ResourceRequirements, nodeOS string, priorityClassName string, privileged bool, cachePVC *corev1api.PersistentVolumeClaim) (*corev1api.Pod, error) {
+func (e *podVolumeExposer) createHostingPod(
+	ctx context.Context,
+	ownerObject corev1api.ObjectReference,
+	exposeType string,
+	hostPath string,
+	operationTimeout time.Duration,
+	label map[string]string,
+	annotation map[string]string,
+	toleration []corev1api.Toleration,
+	selectedNode string,
+	resources corev1api.ResourceRequirements,
+	nodeOS string,
+	priorityClassName string,
+	privileged bool,
+	cachePVC *corev1api.PersistentVolumeClaim,
+) (*corev1api.Pod, error) {
 	hostingPodName := ownerObject.Name
 
 	containerName := string(ownerObject.UID)
@@ -405,6 +434,8 @@ func (e *podVolumeExposer) createHostingPod(ctx context.Context, ownerObject cor
 	args = append(args, podInfo.logFormatArgs...)
 	args = append(args, podInfo.logLevelArgs...)
 
+	affinity := &kube.LoadAffinity{}
+
 	var securityCtx *corev1api.PodSecurityContext
 	var containerSecurityCtx *corev1api.SecurityContext
 	nodeSelector := map[string]string{}
@@ -417,8 +448,13 @@ func (e *podVolumeExposer) createHostingPod(ctx context.Context, ownerObject cor
 			},
 		}
 
-		nodeSelector[kube.NodeOSLabel] = kube.NodeOSWindows
 		podOS.Name = kube.NodeOSWindows
+
+		affinity.NodeSelector.MatchExpressions = append(affinity.NodeSelector.MatchExpressions, metav1.LabelSelectorRequirement{
+			Key:      kube.NodeOSLabel,
+			Values:   []string{kube.NodeOSWindows},
+			Operator: metav1.LabelSelectorOpIn,
+		})
 
 		toleration = append(toleration, []corev1api.Toleration{
 			{
@@ -443,9 +479,16 @@ func (e *podVolumeExposer) createHostingPod(ctx context.Context, ownerObject cor
 			Privileged: &privileged,
 		}
 
-		nodeSelector[kube.NodeOSLabel] = kube.NodeOSLinux
 		podOS.Name = kube.NodeOSLinux
+
+		affinity.NodeSelector.MatchExpressions = append(affinity.NodeSelector.MatchExpressions, metav1.LabelSelectorRequirement{
+			Key:      kube.NodeOSLabel,
+			Values:   []string{kube.NodeOSWindows},
+			Operator: metav1.LabelSelectorOpNotIn,
+		})
 	}
+
+	podAffinity := kube.ToSystemAffinity(affinity, nil)
 
 	pod := &corev1api.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -466,6 +509,7 @@ func (e *podVolumeExposer) createHostingPod(ctx context.Context, ownerObject cor
 		Spec: corev1api.PodSpec{
 			NodeSelector: nodeSelector,
 			OS:           &podOS,
+			Affinity:     podAffinity,
 			Containers: []corev1api.Container{
 				{
 					Name:            containerName,
